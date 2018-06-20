@@ -1,3 +1,4 @@
+require Logger
 defmodule Mongo.Topology do
   @moduledoc false
 
@@ -143,27 +144,38 @@ defmodule Mongo.Topology do
   end
 
   def handle_cast({:connected, monitor_pid}, state) do
-    {host, ^monitor_pid} = Enum.find(state.monitors, fn {_key, value} -> value == monitor_pid end)
-    arbiters = fetch_arbiters(state)
+    cond do
+      monitor_pid == nil -> 
+        Logger.info("[Topology] monitor_pid is invalid, unable to connect")
+        {:noreply, state}
+      true -> 
+        case Enum.find(state.monitors, fn {_key, value} -> value == monitor_pid end) do
+          nil ->
+            Logger.info("[Topology] Unable to find a matching value, unable to connect")
+            {:noreply, state}
+          {host, ^monitor_pid} ->
+            arbiters = fetch_arbiters(state)
 
-    new_state =
-      if host in arbiters do
-        state
-      else
-        conn_opts =
-          state.opts
-          |> Keyword.put(:connection_type, :client)
-          |> Keyword.put(:topology_pid, self())
-          |> connect_opts_from_address(host)
+            new_state =
+              if host in arbiters do
+                state
+              else
+                conn_opts =
+                  state.opts
+                  |> Keyword.put(:connection_type, :client)
+                  |> Keyword.put(:topology_pid, self())
+                  |> connect_opts_from_address(host)
 
-        {:ok, pool} = DBConnection.start_link(Mongo.Protocol, conn_opts)
-        connection_pools = Map.put(state.connection_pools, host, pool)
-        Enum.each(state.waiting_pids, fn from ->
-          GenServer.reply(from, {:new_connection, host})
-        end)
-        %{ state | connection_pools: connection_pools, waiting_pids: [] }
-      end
-    {:noreply, new_state}
+                {:ok, pool} = DBConnection.start_link(Mongo.Protocol, conn_opts)
+                connection_pools = Map.put(state.connection_pools, host, pool)
+                Enum.each(state.waiting_pids, fn from ->
+                  GenServer.reply(from, {:new_connection, host})
+                end)
+                %{ state | connection_pools: connection_pools, waiting_pids: [] }
+              end
+            {:noreply, new_state}            
+        end
+    end
   end
 
   def handle_cast({:force_check, server_address}, state) do
